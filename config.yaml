@@ -1,0 +1,61 @@
+# Podvia 通用语音合成工具配置
+# 注意：API Key 不写在这里，写在 .env 文件中（DASHSCOPE_API_KEY=sk-xxx）；
+# GUI 用户的 Key 由 DPAPI 加密保存在 %APPDATA%\Podvia\gui_settings.json。
+
+provider: qwen_audio
+# qwen-audio-3.0-tts-plus：百炼免费额度模型（10000 次，2026-10-12 前有效），
+# 属 Qwen-Audio-TTS 系列（端点/音色与 Qwen-TTS 不通用），原生支持导演指令（input.instruction）
+model: qwen-audio-3.0-tts-plus
+
+# 角色 → 声音绑定。音色一致性保证：同一角色永远使用同一 voice
+# 音色来自 Qwen-Audio-TTS 系统音色列表（该模型仅有这两个系统音色，均中英双语）
+voices:
+  Lily: { voice: "longanlingxin", language_type: "English" }   # 龙安灵心：25岁女，知心温暖音
+  Leo:  { voice: "longanlufeng",  language_type: "Chinese" }   # 龙安鲁风：25岁男，明亮开朗音
+
+generate:
+  max_concurrency: 3        # 并发数（建议 2~5，根据 API 限流情况调整）
+  request_timeout: 60       # 单请求超时（秒）
+  max_retries: 3            # 最大重试次数
+  retry_base_delay: 2.0     # 重试基础延迟（秒），指数退避：2s → 4s → 8s
+
+qwen:
+  optimize_instructions: true   # 仅 qwen 系列 instruct 模型生效（服务端语义增强，不修改台词文本）
+  base_url: "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
+  # Qwen-Audio-TTS 系列专用端点（qwen_audio provider 使用）
+  audio_base_url: "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer"
+
+# Qwen-Audio-TTS 音频参数（仅 provider: qwen_audio 时生效；整段缺省=下方默认值）
+# 官方依据：https://help.aliyun.com/zh/model-studio/qwen-audio-tts-http-api（2026-09-28）
+# 注意：下列可选项缺省（null）时不会发送给 API；format/sample_rate 缺省 wav/24000
+qwen_audio:
+  format: wav             # 仅 wav / mp3（pcm、opus 百炼支持但本版本合并管线未开放）
+  sample_rate: 24000      # 8000/12000/16000/22050/24000/44100/48000
+  # rate: 1.0             # 语速 0.5~2.0
+  # pitch: 1.0            # 音调 0.5~2.0
+  # volume: 50            # 音量 0~100 整数
+  # seed: 0               # 随机种子 0~65535；相同 seed 可复现
+  # language_hint: en     # Podvia 配置名（API 字段 language_hints），官方 16 码之一：
+                          # zh/en/fr/de/ja/ko/ru/pt/th/id/vi/es/it/ms/fil/ar
+  # hot_fix:              # 结构必须同官方示例：
+  #   pronunciation:      #   {"pronunciation":[{"天气":"tian1 qi4"}],
+  #     - {天气: "tian1 qi4"}   #    "replace":[{"今天":"金天"}]}
+  #   replace:
+  #     - {今天: "金天"}
+  # 复刻/设计/基础音色在角色下加 custom: true（仅跳过系统音色白名单，云端不存在仍会报错）
+  # SSML：显式开启后，该 provider 的台词按 SSML 校验并发送 enable_ssml=true
+  #   （普通文本永远不会被自动改写成 SSML；也可在单个角色下写 ssml: true/false 覆盖）
+  # enable_ssml: false
+  # 官方白名单仅 speak(rate/pitch/volume)/break/phoneme/sub/say-as；
+  # 阿里云不支持 prosody/emphasis；详见 podcast_tts/ssml.py 注释
+
+merge:
+  format: mp3               # 最终输出格式：mp3 / wav
+  bitrate: "192k"           # mp3 码率
+
+paths:
+  scripts_dir: scripts
+  projects_dir: projects
+  logs_dir: logs
+  # FFmpeg/ffprobe 所在目录（tools/bin 已被 gitignore；目录缺失时回退系统 PATH）
+  ffmpeg_dir: tools/bin

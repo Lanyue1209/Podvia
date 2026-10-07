@@ -1,0 +1,26 @@
+# 密钥与本地产物
+.env
+projects/
+logs/
+tools/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# PyInstaller（阶段 7）
+build/
+dist/
+*.spec.bak
+
+# IDE / 编辑器临时文件
+.idea/
+.vscode/
+.trae/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db

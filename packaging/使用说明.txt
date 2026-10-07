@@ -1,0 +1,54 @@
+﻿Podvia Windows 打包与使用说明（阶段 7）
+======================================
+
+一、构建（开发机）
+  1. 需要 Windows 10/11、Python 3.12、项目 .venv（依赖见 requirements.txt）。
+  2. 在仓库根目录执行：
+       powershell -ExecutionPolicy Bypass -File packaging/build.ps1
+     脚本会：安全检查（拒绝非空 .env）-> 检测 FFmpeg -> 安装 PyInstaller
+     -> 封网跑全部 mock 单测 -> 构建 -> 产物安全复核。
+  3. 产物目录：dist\Podvia\（可整个复制到任意目录，中文/空格路径均可）。
+     分发时把整个 Podvia 文件夹打包为 zip；不要只拷 Podvia.exe。
+
+二、FFmpeg / ffprobe 策略
+  - 若构建时仓库 tools\bin 下存在 ffmpeg.exe 与 ffprobe.exe，则随包分发，
+    合并功能开箱即用。
+  - 否则安装包【不内置 FFmpeg】（许可证/体积考量），用户二选一：
+      a) 安装 FFmpeg 并加入 PATH（https://www.gyan.dev/ffmpeg/builds/）；
+      b) 把 ffmpeg.exe、ffprobe.exe 放到 %APPDATA%\Podvia\tools\bin。
+    缺失时只有"合并"步骤会报错并给出上述指引；生成、试听、缓存不受影响。
+
+三、首次运行（无开发环境的 Windows 机器）
+  1. 双击 Podvia.exe 启动 GUI（命令行用法见 Podvia.exe --help）。
+  2. 程序在 %APPDATA%\Podvia 初始化：
+       config.yaml   外部配置模板（可后续用记事本修改）
+       .env          空的 DASHSCOPE_API_KEY=（在此填 Key，或直接在 GUI 输入）
+       scripts\ projects\ logs\ tools\bin\   脚本/缓存输出/日志/FFmpeg 目录
+  3. API Key 不会、也不可能来自安装包；GUI 中输入后仅保存在该用户目录。
+
+四、路径与数据
+  - 安装目录只读也能运行：所有可写数据都在 %APPDATA%\Podvia。
+  - 支持中文路径与带空格路径（子进程参数以数组传递，不经过 shell 拼接）。
+  - 临时文件由系统 TEMP 管理；片段缓存位于 projects\<episode>\segments，
+    缓存 hash 为 v3（含 provider/model/voice/语言/文本/最终导演指令/全部最终音频参数）。
+  - 卸载：删除安装目录与 %APPDATA%\Podvia 即无残留。
+
+五、验收清单（在干净机器上逐项人工验证）
+  [ ] Podvia.exe gui 能启动，模型/音色下拉由能力矩阵驱动
+  [ ] 填入 API Key -> 参数校验 -> 试听（小样本真实 API）
+  [ ] 脚本文本生成、章节文件（book）生成
+  [ ] 暂停/继续/取消（取消后已在途请求仍会完成，属预期）
+  [ ] 失败片段"重试失败片段"与命令行 regen <episode> <编号...>
+  [ ] 合并出片（需 FFmpeg）；wav/mp3 混合片段可合并
+  注：真实 API 与真实 FFmpeg 验收必须用真实 Key/真实二进制独立记录，
+      mock 测试结果不得替代。
+
+六、命令行
+  parse <脚本>                 只解析不生成
+  generate <脚本> [--force]    生成并自动合并
+  book <章节文件> [--speaker]  读书音频工作流
+  retry <episode>              重试 failed/pending 片段
+  regen <episode> <编号...>    局部重生成指定片段
+  merge <episode>              仅重新合并
+  status <episode>             查看 manifest
+  gui                          图形界面（无参数默认）
