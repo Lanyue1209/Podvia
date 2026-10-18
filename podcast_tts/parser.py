@@ -73,6 +73,10 @@ META_LINE = re.compile(
     re.IGNORECASE,
 )
 
+# SSML <speak> 块的行级开/闭标记（用于把跨行 SSML 收进同一台词块）
+_SSML_OPEN_RE = re.compile(r"<speak\b", re.IGNORECASE)
+_SSML_CLOSE_RE = re.compile(r"</speak\s*>", re.IGNORECASE)
+
 # [全局配置] 块小节名；VOICE / LANGUAGE 下的 "Name = 值" 会被收集用于交叉校验
 CONFIG_SECTION_LINE = re.compile(
     r"^(VOICE|LANGUAGE|CHARACTER|GLOBAL\s*STYLE)\s*[:：]$", re.IGNORECASE
@@ -110,10 +114,22 @@ class ScriptParser:
         in_config = False
         in_fence = False
         config_section = ""
+        # 跨行 SSML 收集：进入 <speak> 块后，直到 </speak> 的所有行
+        #（含空行/标签/属性）都属于当前台词块，绝不拆段、绝不丢弃标签
+        ssml_open = False
+
+        def _check_ssml_boundary(piece: str) -> None:
+            """按本行/本段内容维护 ssml_open（含开含闭则视为单行完整块）。"""
+            nonlocal ssml_open
+            if _SSML_CLOSE_RE.search(piece):
+                ssml_open = False
+            elif _SSML_OPEN_RE.search(piece):
+                ssml_open = True
 
         def flush() -> None:
             """结束当前台词块并产出 Segment（超长块安全切多段；无台词块为空操作）。"""
             nonlocal speaker, speaker_name, direction, overrides, dialogue_lines
+            nonlocal ssml_open
             if speaker is None:
                 return
             raw = _join_lines(dialogue_lines).strip()
@@ -145,6 +161,7 @@ class ScriptParser:
             speaker, speaker_name, direction, overrides, dialogue_lines = (
                 None, None, None, {}, []
             )
+            ssml_open = False
 
         for lineno, raw_line in enumerate(source.splitlines(), start=1):
             line = raw_line.strip()
@@ -156,6 +173,15 @@ class ScriptParser:
                 in_config = False
                 continue
             if in_fence:
+                continue
+
+            # 跨行 SSML：块内所有行（含空行/标签/属性/看似结构的行）都收进
+            # 当前台词块，直到 </speak> 为止——不拆段、不当作正文结构处理
+            if ssml_open:
+                if line:
+                    dialogue_lines.append(line)
+                    if _SSML_CLOSE_RE.search(line):
+                        ssml_open = False
                 continue
 
             # 空行：结束台词收集；配置块内部的空行不结束配置块
@@ -237,6 +263,7 @@ class ScriptParser:
                 inline_text = header["inline_text"]
                 if inline_text:
                     dialogue_lines.append(inline_text)
+                _check_ssml_boundary(inline_text or "")
                 continue
 
             # 行首方括号但不是已注册角色：区分官方标签 / 疑似写错的标签 / 未注册角色
@@ -293,6 +320,7 @@ class ScriptParser:
             # 台词行：并入当前台词块
             if speaker is not None:
                 dialogue_lines.append(line)
+                _check_ssml_boundary(line)
                 continue
 
             # 未知结构：默认忽略；疑似格式错误时警告

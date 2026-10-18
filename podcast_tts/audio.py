@@ -38,6 +38,7 @@ from podcast_tts.subtitles import (
     build_timeline,
     cues_from_timeline,
     render_srt,
+    render_subtitle_json,
     write_srt,
 )
 
@@ -76,6 +77,8 @@ class MergeOutcome:
     duration: float | None
     skipped: bool          # True = 签名一致跳过合并
     srt: str | None = None  # 相对 episode 目录的字幕路径，如 "output/episode001.srt"
+    # 相对 episode 目录的结构化字幕数据路径，如 "output/episode001.subtitle.json"
+    subtitle_json: str | None = None
 
 
 # —— 工具定位与执行 ————————————————————————————————————————————————
@@ -325,8 +328,11 @@ def run_merge(
             existing_srt = out_path.with_suffix(".srt")
             srt_rel = (f"output/{existing_srt.name}"
                        if existing_srt.is_file() else None)
+            existing_json = srt_rel and out_path.with_suffix(".subtitle.json")
+            json_rel = (f"output/{existing_json.name}"
+                        if existing_json and existing_json.is_file() else None)
             return MergeOutcome(episode=episode, output=out_rel, duration=duration,
-                                skipped=True, srt=srt_rel)
+                                skipped=True, srt=srt_rel, subtitle_json=json_rel)
 
     ffmpeg, ffprobe = resolve_tools(cfg)
     verify_tools(ffmpeg, ffprobe)
@@ -435,6 +441,7 @@ def run_merge(
         # 句级 SRT：直接遍历本次写进 concat_list 的同一份 ordered_sources
         # （规范化临时文件此刻仍存在）。失败不阻断音频合并，只放弃本次字幕。
         srt_rel = None
+        subtitle_json_rel = None
         srt_cues = None
         try:
             timeline = build_timeline(
@@ -449,6 +456,13 @@ def run_merge(
             write_srt(srt_path, render_srt(srt_cues))
             srt_rel = f"output/{srt_path.name}"
             log.ok(f"字幕已生成：{srt_rel}（{len(srt_cues)} 条，时间轴与本次合并同源）")
+            # subtitle.json：与 SRT 同一批 cues（同一时间轴），面向外部渲染系统
+            json_path = srt_path.with_suffix(".subtitle.json")
+            json_path.write_text(
+                render_subtitle_json(srt_cues, manifest, cfg),
+                encoding="utf-8", newline="\n")
+            subtitle_json_rel = f"output/{json_path.name}"
+            log.ok(f"字幕数据已生成：{subtitle_json_rel}")
         elif srt_cues is not None:
             log.info("本项目没有台词片段（纯停顿），不生成 SRT 字幕。")
     finally:
@@ -471,6 +485,7 @@ def run_merge(
         # 字幕条目快照（与本次 concat 同源计算），便于诊断与未来其它字幕格式复用
         manifest.merge["subtitles"] = {
             "file": srt_rel,
+            "json_file": subtitle_json_rel,
             "cues": [
                 {"n": c.number, "start_ms": c.start_ms,
                  "end_ms": c.end_ms, "text": c.text}
@@ -483,4 +498,5 @@ def run_merge(
     srt_text = "，含 SRT 字幕" if srt_rel else ""
     log.ok(f"合并完成：{out_rel}（{len(manifest.segments)} 段{dur_text}{srt_text}）")
     return MergeOutcome(episode=episode, output=out_rel, duration=duration,
-                        skipped=False, srt=srt_rel)
+                        skipped=False, srt=srt_rel,
+                        subtitle_json=subtitle_json_rel)

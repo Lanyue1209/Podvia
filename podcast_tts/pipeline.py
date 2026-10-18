@@ -31,7 +31,7 @@ from podcast_tts.project import (
     sync_records_from_segments,
 )
 from podcast_tts.audio import MergeError, run_merge, segments_signature
-from podcast_tts.ssml import SSMLError, validate_ssml
+from podcast_tts.ssml import SSMLError, resolve_text_mode, validate_ssml
 from podcast_tts.manifest import (
     MAX_TEXT_LEN,
     Manifest,
@@ -384,6 +384,7 @@ def inspect_segments(
             except Exception:  # noqa: BLE001 — 标签仅展示，不影响状态
                 pass
             row["tags"] = " ".join(dict.fromkeys(tags))
+            row["text_mode"] = (seg.text_mode or "auto").strip().lower()
             try:
                 setting, instruction, extras = plan_segment(cfg, seg)
                 row["instruction"] = instruction
@@ -392,16 +393,31 @@ def inspect_segments(
                 row["rate"] = extras.get("rate", seg.rate)
                 row["pitch"] = extras.get("pitch", seg.pitch)
                 row["volume"] = extras.get("volume", seg.volume)
+                row["mode_zh"] = "SSML" if extras.get("enable_ssml") else "普通文本"
                 row["expected_hash"] = content_hash(
                     cfg, seg.text, setting.voice, setting.language_type,
                     instruction, extras,
                 )
                 row["audio_format"] = str(extras.get("format", "wav")).lower()
+                if extras.get("enable_ssml"):
+                    # 预览即校验：SSML 格式错误提前定位到本片段（生成时同样拦截）
+                    try:
+                        validate_ssml(seg.text)
+                        row["ssml_error"] = None
+                    except SSMLError as exc:
+                        row["ssml_error"] = str(exc)
+                        if not row["error"]:
+                            row["error"] = f"SSML 格式错误：{exc}"
             except ConfigError as exc:
                 row["error"] = str(exc)
+                row["ssml_error"] = None
+                row["mode_zh"] = "普通文本"
         else:
             row["tags"] = ""
             row["audio_format"] = "wav"
+            row["text_mode"] = ""
+            row["mode_zh"] = ""
+            row["ssml_error"] = None
         rows.append(row)
     return rows, manifest
 
@@ -535,7 +551,7 @@ def source_snapshot_for_edit(
     attr_map = {
         "text": "text", "speaker": "speaker", "direction": "direction",
         "rate": "rate", "pitch": "pitch", "volume": "volume",
-        "pause_seconds": "pause_seconds",
+        "pause_seconds": "pause_seconds", "text_mode": "text_mode",
     }
     return {f: getattr(target, attr_map[f], None) for f in fields if f in attr_map}
 
@@ -841,21 +857,31 @@ def _generate_batch(
     return succeeded, failed, cancelled
 
 
-def _resolve_extras(cfg: AppConfig, setting) -> dict:
+def _resolve_extras(cfg: AppConfig, setting, seg: "Segment | None" = None) -> dict:
     """解析"项目默认级"音频附加参数（不含角色/行内覆盖）。
 
     audio_params 是 qwen_audio provider 专属；provider=qwen（Qwen-TTS 端点）
     不支持这些 input 字段，返回空 dict（其适配器也不读取 audio_params）。
-    SSML 开关：角色级 setting.ssml 优先，否则跟随全局 enable_ssml。
+    SSML 是**片段级**能力：由该片段的 text_mode（auto/plain/ssml）决定
+    enable_ssml 是否进入本请求——auto 时整段正文是 <speak> 文档 → SSML，
+    否则回退旧版开关（角色级 setting.ssml 优先，否则全局 enable_ssml，
+    与历史行为一致）。普通片段不再被全局开关强制成 SSML。
     """
     if cfg.provider != "qwen_audio":
         return {}
-    ssml_on = setting.ssml if setting.ssml is not None else cfg.audio_params.enable_ssml
     extras = resolve_input_extras(
         cfg.audio_params, cfg.model,
         language_type=setting.language_type, language_hint=setting.language_hint,
     )
-    if ssml_on:
+    if seg is not None:
+        if resolve_text_mode(
+            seg.text, seg.text_mode,
+            role_ssml=setting.ssml,
+            global_ssml=cfg.audio_params.enable_ssml,
+        ) == "ssml":
+            extras["enable_ssml"] = True
+    elif setting.ssml if setting.ssml is not None else cfg.audio_params.enable_ssml:
+        # 无片段上下文（兼容旧调用点）：沿用旧全局/角色开关
         extras["enable_ssml"] = True
     return extras
 
@@ -905,7 +931,7 @@ def plan_segment(
     if snapshot is not None:
         return setting, instruction, dict(snapshot)
 
-    extras = _resolve_extras(cfg, setting)
+    extras = _resolve_extras(cfg, setting, seg)
     display = seg.speaker_name or setting.display_name or sid
     for key in _PLANNED_NUMERIC:
         inline_val = getattr(seg, key)
@@ -940,6 +966,7 @@ def _record_base(seg: Segment) -> dict:
         speaker_name=seg.speaker_name,
         direction=seg.direction, chapter_direction=seg.chapter_direction,
         rate=seg.rate, pitch=seg.pitch, volume=seg.volume, text=seg.text,
+        text_mode=seg.text_mode,
         chapter=seg.chapter, source_file=seg.source_file,
         char_start=seg.char_start, char_end=seg.char_end,
     )
@@ -1030,18 +1057,19 @@ def _generate_one(
     else:
         file_rel = f"segments/{seg.index:04d}_{seg.speaker}.{ext}"
 
-    # SSML：显式开启时逐片段校验（原文不改写、不自动包装）。校验失败不调用 API，
-    # 直接记为 failed；错误信息定位到片段。普通文本模式永远不做 SSML 校验/包装。
+    # SSML：本片段解析为 SSML 模式时逐片段校验（原文不改写、不自动包装）。
+    # 校验失败不调用 API，直接记为 failed（"SSML 格式错误"），绝不静默按
+    # 普通文本发送；普通文本模式的片段永远不做 SSML 校验/包装。
     if extras.get("enable_ssml"):
         try:
             validated = validate_ssml(seg.text)
         except SSMLError as exc:
-            log.error(f"{seg.index:04d} {label} SSML 校验失败：{exc}")
+            log.error(f"{seg.index:04d} {label} SSML 格式错误：{exc}")
             return SegmentRecord(
                 **_record_base(seg),
                 status="failed", file=file_rel,
                 attempts=(record.attempts if record is not None else 0) + 1,
-                error=f"SSML 校验失败：{exc}",
+                error=f"SSML 格式错误：{exc}",
                 audio_params=extras,
             )
         # 冲突规则（官方英文标签页）：<speak rate/pitch/volume> 会覆盖同名 HTTP

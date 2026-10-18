@@ -37,6 +37,9 @@ class Segment:
     # 片段来源形态：None=脚本对白；"dialogue"=章节内显式角色对白；
     # "prose"=章节普通正文（由章节默认角色朗读）。仅用于预览/日志展示
     origin: str | None = None
+    # 文本模式（片段级）：None="auto" 按内容判断；"plain" 强制普通文本；
+    # "ssml" 强制 SSML（校验失败该片段报错）。见 ssml.resolve_text_mode
+    text_mode: str | None = None
 
 
 @dataclass
@@ -67,6 +70,8 @@ class SegmentRecord:
     source_file: str | None = None
     char_start: int | None = None
     char_end: int | None = None
+    # 片段级文本模式（auto/plain/ssml；None=auto。旧 manifest 缺失按 None 加载）
+    text_mode: str | None = None
 
 
 @dataclass

@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,6 +49,9 @@ class SubtitleCue:
     start_ms: int
     end_ms: int
     text: str
+    # 追溯字段（subtitle.json 导出用；SRT 渲染不读取，缺省不影响既有行为）
+    seg_id: str | None = None         # 片段稳定 ID
+    index: int = 0                    # 片段显示序号
 
 
 # SSML / XML 控制标签（<speak>、<break …/> 等）；官方情绪标签走 emotags 精确表
@@ -184,7 +188,8 @@ def cues_from_timeline(entries: list[TimelineEntry]) -> list[SubtitleCue]:
             )
             continue
         number += 1
-        cues.append(SubtitleCue(number, start_ms, cursor_ms, entry.text))
+        cues.append(SubtitleCue(number, start_ms, cursor_ms, entry.text,
+                                seg_id=entry.seg_id, index=entry.index))
     return cues
 
 
@@ -207,17 +212,13 @@ def write_srt(path: Path, content: str) -> Path:
     return path
 
 
-def render_for_episode(
+def _load_cues(
     episode: str,
     cfg,
     *,
     sources: "list[Path | str] | None" = None,
-) -> tuple[str, int]:
-    """独立导出入口：加载项目 → 同源时间线 → SRT 文本。
-
-    返回 (srt 文本, 字幕条数)。0 条（纯停顿项目）时文本为空串，由调用方决定
-    提示方式。merge 流程不经过这里（它直接用本次 ordered_sources）。
-    """
+) -> "tuple[Manifest, list[SubtitleCue]]":
+    """独立导出共用内核：加载项目 manifest → 同源时间线 → 句级字幕。"""
     # 延迟导入：audio 顶层 import 本模块，避免循环
     from podcast_tts.audio import probe_duration, resolve_tools
 
@@ -231,7 +232,21 @@ def render_for_episode(
     _ffmpeg, ffprobe = resolve_tools(cfg)
     entries = build_timeline(
         episode_dir, manifest, ffprobe, probe_duration, sources=sources)
-    cues = cues_from_timeline(entries)
+    return manifest, cues_from_timeline(entries)
+
+
+def render_for_episode(
+    episode: str,
+    cfg,
+    *,
+    sources: "list[Path | str] | None" = None,
+) -> tuple[str, int]:
+    """独立导出入口：加载项目 → 同源时间线 → SRT 文本。
+
+    返回 (srt 文本, 字幕条数)。0 条（纯停顿项目）时文本为空串，由调用方决定
+    提示方式。merge 流程不经过这里（它直接用本次 ordered_sources）。
+    """
+    _manifest, cues = _load_cues(episode, cfg, sources=sources)
     return render_srt(cues), len(cues)
 
 
@@ -246,6 +261,77 @@ def export_srt(episode: str, cfg, out_path: "Path | str | None" = None) -> tuple
     path = Path(out_path) if out_path else default_srt_path(episode, cfg)
     write_srt(path, content)
     return path, count
+
+
+# —— subtitle.json（Remotion 等外部渲染系统的结构化字幕数据出口） ————————————
+#
+# 与 SRT 完全同源：直接复用 cues（同一份整数毫秒时间轴），绝不解析 SRT、
+# 不重新计算时间。speaker/language/voice 取自 manifest 记录与当前角色配置；
+# translation 预留给未来翻译流程（当前数据模型无翻译字段，恒为空串）。
+
+
+def _record_by_seg_id(manifest: Manifest) -> dict:
+    return {r.seg_id: r for r in manifest.segments if r.seg_id}
+
+
+def build_subtitle_json_data(cues: list[SubtitleCue], manifest: Manifest, cfg) -> list[dict]:
+    """把句级字幕 + manifest 记录展开为 subtitle.json 条目列表（不写盘）。
+
+    时间字段直接由 cue 的整数毫秒换算为秒（ms/1000，保留 3 位小数），
+    与同 cue 渲染出的 SRT 时间戳严格一致。
+    """
+    by_id = _record_by_seg_id(manifest)
+    out: list[dict] = []
+    for c in cues:
+        rec = by_id.get(c.seg_id)
+        speaker = ""
+        language = ""
+        voice = ""
+        if rec is not None:
+            speaker = rec.speaker_name or rec.speaker or ""
+            setting = cfg.voices.get(rec.speaker) if rec.speaker else None
+            if setting is not None:
+                language = setting.language_type or ""
+                voice = setting.voice or ""
+            if not voice:
+                voice = manifest.voices.get(rec.speaker, "") if rec.speaker else ""
+        out.append({
+            "segment_id": c.seg_id or "",
+            "speaker": speaker,
+            "language": language,
+            "start_time": round(c.start_ms / 1000, 3),
+            "end_time": round(c.end_ms / 1000, 3),
+            "text": c.text,
+            "translation": "",
+            "voice": voice,
+        })
+    return out
+
+
+def render_subtitle_json(cues: list[SubtitleCue], manifest: Manifest, cfg) -> str:
+    """序列化为 subtitle.json 文本（UTF-8、indent=2、不转义中文）。"""
+    return json.dumps(
+        build_subtitle_json_data(cues, manifest, cfg),
+        ensure_ascii=False, indent=2,
+    ) + "\n"
+
+
+def default_subtitle_json_path(episode: str, cfg) -> Path:
+    """与 SRT 同目录、同规则：output/<episode>.subtitle.json。"""
+    return cfg.projects_dir / episode / "output" / f"{episode}.subtitle.json"
+
+
+def export_subtitle_json(
+    episode: str, cfg, out_path: "Path | str | None" = None
+) -> tuple[Path, int]:
+    """生成并写出 subtitle.json（CLI/测试便捷入口），返回 (路径, 条数)。"""
+    manifest, cues = _load_cues(episode, cfg)
+    path = Path(out_path) if out_path else default_subtitle_json_path(episode, cfg)
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(render_subtitle_json(cues, manifest, cfg),
+                    encoding="utf-8", newline="\n")
+    return path, len(cues)
 
 
 def _fmt_indices(indices: list[int]) -> str:

@@ -638,15 +638,29 @@ def test_ssml_speak_attr_overrides_http_param(tmp_path):
     assert extras["enable_ssml"] is True
 
 
-def test_ssml_disabled_plain_text_not_validated(tmp_path):
-    # 普通模式：即使文本形似标签也原样发送，不校验不开启
+def test_ssml_disabled_speak_doc_auto_validated(tmp_path):
+    # 片段级文本模式（auto）：整段正文是 <speak> 文档 → 自动按 SSML 校验发送；
+    # 格式错误（阿里云不支持 prosody）→ 明确报错，绝不静默按普通文本发送
     cfg = _audio_cfg(tmp_path)
     script = write_script(tmp_path, _ssml_script("<speak><prosody>原样透传</prosody></speak>"))
     provider = FakeProvider()
 
     outcome = run_generate(script, cfg, provider=provider)
+    assert outcome.failed == 1
+    assert provider.calls == []
+    assert "SSML" in outcome.manifest.record(1).error
+
+
+def test_auto_plain_text_with_angle_brackets_stays_plain(tmp_path):
+    # auto 只认整段 <speak>…</speak> 文档；偶尔出现 <xxx> 不盲目判成 SSML
+    cfg = _audio_cfg(tmp_path)
+    script = write_script(tmp_path, _ssml_script("温度 5<10 且 a<b 正常。"))
+    provider = FakeProvider()
+
+    outcome = run_generate(script, cfg, provider=provider)
     assert outcome.succeeded == 1
     assert "enable_ssml" not in provider.calls[0].audio_params
+    assert provider.calls[0].text == "温度 5<10 且 a<b 正常。"
 
 
 def test_ssml_voice_level_override(tmp_path):

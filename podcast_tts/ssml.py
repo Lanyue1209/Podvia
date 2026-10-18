@@ -60,9 +60,73 @@ _BREAK_TIME = re.compile(r"^(\d+)(ms|s)$")
 # 连续多个 break 累计上限 10s（官方）
 _BREAK_TOTAL_CAP_MS = 10_000
 
+# 片段级文本模式（Segment.text_mode）
+TEXT_MODE_AUTO = "auto"    # 按内容自动判断（默认）
+TEXT_MODE_PLAIN = "plain"  # 强制普通文本（不做 SSML 校验，原文发送）
+TEXT_MODE_SSML = "ssml"    # 强制 SSML（必须通过校验，失败则该片段报错）
+TEXT_MODES = (TEXT_MODE_AUTO, TEXT_MODE_PLAIN, TEXT_MODE_SSML)
+
+# auto 判定：整段正文就是一份 <speak>…</speak> 文档（形状匹配；XML 合法性由
+# validate_ssml 把关——形状像但格式错误 → 明确报错，绝不静默退回普通文本）。
+# 文本里偶尔出现 <xxx> 不会命中（必须以 <speak 根开头、以 </speak> 收尾）。
+_SPEAK_DOC_RE = re.compile(
+    r"^\s*<speak\b[^>]*>.*</speak>\s*$", re.IGNORECASE | re.DOTALL
+)
+# 形似 SSML：出现 <speak 开标签但不满足完整文档形状（如未闭合）。
+# 同样视为 SSML 意图，交由 validate_ssml 报"SSML 格式错误"，
+# 绝不静默退回普通文本发送（否则用户以为在发 SSML 实际发的是原文）。
+_SPEAK_OPEN_ANY_RE = re.compile(r"<speak\b", re.IGNORECASE)
+
 
 class SSMLError(ValueError):
     """SSML 校验错误；消息必须能定位到具体标签/属性/原因。"""
+
+
+def looks_like_ssml(text: str | None) -> bool:
+    """文本是否应按 SSML 处理（形状判断，不做 XML 校验）。
+
+    - 完整 <speak>…</speak> 文档 → True；
+    - 含 <speak 开标签但文档不完整（如未闭合）→ True（SSML 意图，
+      XML 错误由 validate_ssml 明确报"SSML 格式错误"，绝不静默按 plain 发送）；
+    - 偶尔出现 <xxx> 等普通尖括号内容（无 <speak）→ False，按普通文本。
+    """
+    if not text:
+        return False
+    if _SPEAK_DOC_RE.match(text):
+        return True
+    return _SPEAK_OPEN_ANY_RE.search(text) is not None
+
+
+def resolve_text_mode(
+    text: str | None,
+    text_mode: str | None = None,
+    *,
+    role_ssml: "bool | None" = None,
+    global_ssml: bool = False,
+) -> str:
+    """解析片段文本模式 → "plain" | "ssml"（逐片段独立，绝不整章统一）。
+
+    优先级（高 → 低）：
+    1. text_mode 显式 "ssml"/"plain"（片段管理中的强制选择，最高）；
+    2. auto（含 None/空/未知值）：
+       a. 角色级显式 ssml 开关（旧语义：True=该角色全部按 SSML 校验，
+          False=该角色永不使用 SSML）→ 直接生效，与历史行为一致；
+       b. 整段正文是 <speak>…</speak> 文档（或含 <speak 开标签）→ ssml；
+       c. 全局 enable_ssml（旧项目兼容）→ ssml；
+       d. 否则 plain。
+    强制/auto 判定为 ssml 后是否合法交给 validate_ssml——形状像但格式错误
+    会明确报错，绝不静默退回普通文本。
+    """
+    mode = (text_mode or "").strip().lower()
+    if mode == TEXT_MODE_SSML:
+        return TEXT_MODE_SSML
+    if mode == TEXT_MODE_PLAIN:
+        return TEXT_MODE_PLAIN
+    if role_ssml is not None:
+        return TEXT_MODE_SSML if role_ssml else TEXT_MODE_PLAIN
+    if looks_like_ssml(text):
+        return TEXT_MODE_SSML
+    return TEXT_MODE_SSML if global_ssml else TEXT_MODE_PLAIN
 
 
 @dataclass(frozen=True)

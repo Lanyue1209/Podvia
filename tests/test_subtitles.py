@@ -120,7 +120,7 @@ def test_cues_consecutive_pauses_accumulate():
         TimelineEntry(3, "s1", "speech", 1000, "你好"),
     ]
     cues = cues_from_timeline(entries)
-    assert cues == [SubtitleCue(1, 1000, 2000, "你好")]
+    assert cues == [SubtitleCue(1, 1000, 2000, "你好", seg_id="s1", index=3)]
 
 
 def test_cues_empty_speech_text_skips_cue_but_keeps_time():

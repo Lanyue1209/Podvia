@@ -140,7 +140,7 @@ class WorkingScript:
         同一字段再次编辑时以最新源值刷新 base。
         """
         allowed = ("text", "speaker", "direction", "rate", "pitch", "volume",
-                   "pause_seconds")
+                   "pause_seconds", "text_mode")
         clean = {k: v for k, v in patch.items() if k in allowed}
         existing = self.overrides.get(seg_id, {})
         existing.update(clean)
@@ -286,7 +286,7 @@ _OVERRIDE_FIELDS = ("speaker", "direction", "rate", "pitch", "volume")
 _FIELD_ATTR = {
     "text": "text", "speaker": "speaker", "direction": "direction",
     "rate": "rate", "pitch": "pitch", "volume": "volume",
-    "pause_seconds": "pause_seconds",
+    "pause_seconds": "pause_seconds", "text_mode": "text_mode",
 }
 
 
@@ -378,6 +378,10 @@ def apply_overrides(segments: list[Segment], ws: WorkingScript, cfg) -> list[str
         if "volume" in live:
             val = live["volume"]
             seg.volume = int(val) if val not in (None, "") else None
+        if "text_mode" in live:
+            val = str(live["text_mode"] or "").strip().lower()
+            # auto 是默认值：归一化为 None（显式选择"自动"= 清除强制模式）
+            seg.text_mode = val if val in ("plain", "ssml") else None
         applied.append(seg.seg_id)
     return applied
 
@@ -405,6 +409,7 @@ def sync_records_from_segments(
         rec.pitch = seg.pitch
         rec.volume = seg.volume
         rec.text = seg.text
+        rec.text_mode = seg.text_mode
         if seg.kind == "pause":
             rec.pause_seconds = seg.pause_seconds
         rec.chapter = seg.chapter

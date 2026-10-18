@@ -38,6 +38,8 @@ from podcast_tts.gui.settings import (
 )
 from podcast_tts.project import WorkingScript
 
+APP_VERSION = "v0.1.2"  # 随发布更新；显示在主窗口标题，便于核对测试包版本
+
 SAMPLE_RATES = [8000, 12000, 16000, 22050, 24000, 44100, 48000]
 LANGUAGE_HINTS = ["", "zh", "en", "fr", "de", "ja", "ko", "ru", "pt", "th",
                   "id", "vi", "es", "it", "ms", "fil", "ar"]
@@ -121,7 +123,7 @@ SSML <speak> 标签属性优先级最高（出现时不再发送同名 HTTP 参�
 class PodviaApp(tk.Tk):
     def __init__(self, controller: GuiController | None = None):
         super().__init__()
-        self.title("Podvia — 通用语音合成（Windows）")
+        self.title(f"Podvia {APP_VERSION} — 通用语音合成（Windows）")
         self.geometry("1180x860")
         self.minsize(880, 560)
         self.configure(background=theme.BG)
@@ -524,7 +526,8 @@ class PodviaApp(tk.Tk):
                   style="Muted.TLabel").grid(
                       row=1, column=2, columnspan=2, sticky="w")
         self.chk_ssml = ttk.Checkbutton(
-            dbox, text="启用 SSML（原文必须是合法 SSML，详见创作页「语法帮助」）",
+            dbox, text="旧版全局 SSML 开关（兼容旧项目；推荐在片段管理中按片段"
+                       "选择文本模式，正文含 <speak> 时自动按 SSML 发送）",
             variable=self.var_ssml, command=self._schedule_save)
         self.chk_ssml.grid(row=2, column=0, columnspan=4, sticky="w",
                            padx=theme.PAD_LG, pady=theme.PAD_XS)
@@ -953,13 +956,14 @@ class PodviaApp(tk.Tk):
 
         table_frame = ttk.Frame(win)
         table_frame.pack(fill="both", expand=True, padx=8, pady=4)
-        cols = ("idx", "kind", "state", "action", "role", "original", "text",
-                "tags", "instruction", "params", "output", "error")
+        cols = ("idx", "kind", "state", "action", "role", "mode", "original",
+                "text", "tags", "instruction", "params", "output", "error")
         tree = ttk.Treeview(table_frame, columns=cols, show="headings")
         headings = {
             "idx": ("序号", 50), "kind": ("类型", 55),
             "state": ("当前状态", 75), "action": ("本次动作", 110),
             "role": ("角色（显示名/音色外）", 120),
+            "mode": ("文本模式", 70),
             "original": ("原文", 190), "text": ("实际发送文本", 220),
             "tags": ("情绪/拟声标签", 100),
             "instruction": ("最终 instruction", 160),
@@ -1012,7 +1016,7 @@ class PodviaApp(tk.Tk):
             tree.insert("", "end", values=(
                 f"{r['index']:04d}", kind_label,
                 r.get("state_zh", ""), r.get("action_zh", ""),
-                role,
+                role, r.get("mode_zh", ""),
                 r.get("original") or "", text_disp,
                 r.get("tags") or "",
                 r.get("instruction") or "（无）", params,
@@ -1453,6 +1457,22 @@ class PodviaApp(tk.Tk):
         ttk.Combobox(role_line, textvariable=var_role, values=names,
                      state="readonly", width=24).pack(side="left", padx=4)
 
+        # 文本模式（片段级）：auto=按内容自动判断（默认）；plain=强制普通文本；
+        # ssml=强制 SSML（格式错误时该片段明确报错，不静默按普通文本发送）
+        mode_line = ttk.Frame(frm)
+        mode_line.pack(fill="x", pady=(2, 2))
+        ttk.Label(mode_line, text="文本模式").pack(side="left")
+        _MODE_ITEMS = (("自动", "auto"), ("普通文本", "plain"), ("SSML", "ssml"))
+        _mode_by_val = {val: label for label, val in _MODE_ITEMS}
+        cur_mode = (row.get("text_mode") or "auto").strip().lower()
+        var_mode = tk.StringVar(
+            value=_mode_by_val.get(cur_mode, "自动"))
+        ttk.Combobox(mode_line, textvariable=var_mode,
+                     values=[lb for lb, _ in _MODE_ITEMS],
+                     state="readonly", width=12).pack(side="left", padx=4)
+        ttk.Label(mode_line, text="auto=按内容判断；含 <speak> 完整文档自动按 SSML 发送",
+                  foreground=theme.MUTED_FG).pack(side="left", padx=6)
+
         ttk.Label(frm, text="局部导演/表演指令（留空=清除该片段局部指令，回退到角色/项目级）").pack(
             anchor="w", pady=(4, 0))
         var_dir = tk.StringVar(value=row.get("direction") or "")
@@ -1487,6 +1507,8 @@ class PodviaApp(tk.Tk):
             if name:
                 i = names.index(name)
                 patch["speaker"] = ids[i]
+            # 文本模式始终写入：选"自动"= 显式回退到 auto（清除 plain/ssml 强制）
+            patch["text_mode"] = _mode_by_val.get(var_mode.get(), "auto")
             # direction 始终写入：空字符串 = 显式清除该片段局部指令（不恢复脚本里的行内指令）
             patch["direction"] = var_dir.get().strip()
             for key, var in (("rate", var_rate), ("pitch", var_pitch),

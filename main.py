@@ -34,7 +34,7 @@ from podcast_tts.models import Segment
 from podcast_tts.book import BookError, parse_book
 from podcast_tts.parser import ParseError, ScriptParser
 from podcast_tts.pipeline import run_book, run_generate, run_regenerate, run_retry
-from podcast_tts.subtitles import SrtError, export_srt
+from podcast_tts.subtitles import SrtError, export_srt, export_subtitle_json
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -65,6 +65,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p_srt.add_argument("episode", help="episode id，如 episode001")
     p_srt.add_argument("--output", default=None,
                        help="输出 .srt 路径（默认 projects/<episode>/output/<episode>.srt）")
+
+    p_sjson = sub.add_parser(
+        "subtitle-json",
+        help="导出 subtitle.json 结构化字幕数据（与 SRT 同一时间轴，供外部渲染系统使用）")
+    p_sjson.add_argument("episode", help="episode id，如 episode001")
+    p_sjson.add_argument("--output", default=None,
+                         help="输出路径（默认 projects/<episode>/output/<episode>.subtitle.json）")
 
     p_status = sub.add_parser("status", help="查看 manifest 摘要：总数/成功/失败/最近错误")
     p_status.add_argument("episode", help="episode id，如 episode001")
@@ -290,6 +297,35 @@ def cmd_srt(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_subtitle_json(args: argparse.Namespace) -> int:
+    """导出 subtitle.json（结构化字幕数据，供 Remotion 等外部渲染系统使用）。
+
+    与 srt 子命令同源：同一份整数毫秒时间轴，绝不解析 SRT。
+    """
+    cfg = _load_config_or_exit(key_required=False)
+    if cfg is None:
+        return 2
+
+    logs.enable_file_logging(cfg.logs_dir, args.episode)
+    out = Path(args.output) if args.output else None
+    try:
+        path, count = export_subtitle_json(args.episode, cfg, out)
+    except SrtError as exc:
+        logs.error(str(exc))
+        return 1
+    except MergeError as exc:
+        logs.error(str(exc))
+        return 5
+    except FileNotFoundError as exc:
+        logs.error(str(exc))
+        return 1
+    if count == 0:
+        logs.info(f"已写出 {path}，但项目没有台词片段（纯停顿），字幕数据为 0 条。")
+    else:
+        logs.ok(f"已导出 {count} 条字幕数据：{path}")
+    return 0
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     cfg = _load_config_or_exit(key_required=False)
     if cfg is None:
@@ -408,6 +444,7 @@ def main(argv: list[str] | None = None) -> int:
         "retry": cmd_retry,
         "merge": cmd_merge,
         "srt": cmd_srt,
+        "subtitle-json": cmd_subtitle_json,
         "status": cmd_status,
         "book": cmd_book,
         "regen": cmd_regen,
